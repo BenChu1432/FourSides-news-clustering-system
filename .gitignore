@@ -1,0 +1,31 @@
+# Node
+node_modules/
+dist/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Environment variables+API keys
+.env
+backend/serverless-poc.yml
+backend/.env
+ben_playground/.env-cmdrc
+ben_playground/amplify.yml
+ben_playground/.next/
+
+
+background/.env
+
+backend/.serverless/
+backend/.requirements.zip
+backend/foursides-poc.zip
+.next/
+
+
+
+# IDEs
+.vscode/
+.idea/
