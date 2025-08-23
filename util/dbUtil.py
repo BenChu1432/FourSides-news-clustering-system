@@ -203,6 +203,7 @@ class Cluster(Base):
 
     cluster_name = Column(String, unique=True, nullable=True)
     cluster_summary = Column(String, unique=True, nullable=True)
+    cluster_question = Column(String, unique=True, nullable=True)
 
     processed_at = Column(Integer, nullable=True)
     latest_published = Column(Integer, nullable=True)  # Unix timestamp
@@ -383,7 +384,8 @@ def store_clusters_to_db(
     insert_chunk_size=1000,
     cluster_centroid_embedding_updates=None,
     cluster_latest_pub=None,
-    cluster_top_entities=None
+    cluster_top_entities=None,
+    attached_counts=None
 ):
     """
     Expects df to include at least:
@@ -402,6 +404,7 @@ def store_clusters_to_db(
     cluster_centroid_embedding_updates = cluster_centroid_embedding_updates or {}
     cluster_latest_pub = cluster_latest_pub or {}
     cluster_top_entities = cluster_top_entities or {}
+    attached_counts = attached_counts or {}
 
     def _to_uuid(x):
         return uuid.UUID(str(x))
@@ -466,6 +469,7 @@ def store_clusters_to_db(
                 meta = {
                     "cluster_name": first_row.get("headline"),
                     "cluster_summary": first_row.get("summary"),
+                    "cluster_question": first_row.get("question"),
                     "centroid_embedding": first_row["centroid_embedding"].tolist()
                         if isinstance(first_row.get("centroid_embedding"), np.ndarray)
                         else first_row.get("centroid_embedding"),
@@ -535,7 +539,8 @@ def store_clusters_to_db(
                             "places_in_detail": meta.get("places_in_detail"),
                             "clustering_job_id":meta.get("job_id"),
                             "cluster_name": meta.get("cluster_name") or None,
-                            "cluster_summary": meta.get("cluster_summary") or None
+                            "cluster_summary": meta.get("cluster_summary") or None,
+                            "cluster_question": meta.get("cluster_question") or None
                         })
                     if rows:
                         stmt = insert(Cluster).values(rows).on_conflict_do_nothing(index_elements=["id"])
@@ -658,13 +663,16 @@ def store_clusters_to_db(
                     print(f"🔁 Updating {len(existing_str_ids)} existing clusters...")
                     for cid in existing_str_ids:
                         cid_uuid = uuid.UUID(cid)
+                        inc = int(attached_counts.get(cid, 0) or 0)
                         stmt_values = {}
+
+                        if inc:
+                            stmt_values["article_count"] = func.coalesce(Cluster.article_count, 0) + inc
 
                         embeddings = cluster_centroid_embedding_updates.get(cid)
                         if embeddings and all(isinstance(e, np.ndarray) for e in embeddings):
                             new_centroid = np.mean(embeddings, axis=0).tolist()
                             stmt_values["centroid_embedding"] = new_centroid
-                            stmt_values["article_count"] = func.coalesce(Cluster.article_count, 0) + len(embeddings)
 
                         latest_pub = cluster_latest_pub.get(cid)
                         if latest_pub is not None:

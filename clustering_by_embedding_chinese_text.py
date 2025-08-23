@@ -265,7 +265,7 @@ def decide_place_for_cluster(place_counts: Counter, media_regions: list[str]) ->
 # Caches for per-cluster aggregation
 cluster_place_counts: dict[str, Counter] = defaultdict(Counter)   # entities -> places
 cluster_media_regions: dict[str, list[str]] = defaultdict(list)   # derived from media_name
-
+attached_counts: Dict[str, int] = defaultdict(int)
 # Track members for clusters created in this job
 new_clusters_created: set[str] = set()
 cluster_members: dict[str, list[dict]] = defaultdict(list)
@@ -351,6 +351,7 @@ def _parse_top_entities_any(raw):
     data = raw
     if isinstance(raw, str):
         try:
+            print("LLM raw output:", raw)
             data = json.loads(raw)
         except Exception:
             try:
@@ -475,8 +476,10 @@ def embed_long_text_zh(text: str, char_budget: int = None, overlap: int = 40) ->
     return _normalize(v)
 
 # ---- LOAD EXISTING CLUSTERS ----
+three_days_ago = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
+
 df_clusters = pd.read_sql(
-    """
+    f"""
     SELECT id, 
            centroid_embedding, 
            top_entities, 
@@ -489,6 +492,7 @@ df_clusters = pd.read_sql(
            topic_candidates,
            places_in_concern
     FROM cluster
+    WHERE latest_published >= '{three_days_ago}'
     """,
     engine
 )
@@ -540,9 +544,8 @@ df_new = pd.read_sql(f"""
     WHERE "clusterId" IS NULL
       AND content IS NOT NULL
       AND published_at IS NOT NULL
-   ORDER BY published_at ASC NULLS LAST
+   ORDER BY published_at DESC NULLS LAST
     LIMIT {SAMPLE_SIZE}
-    OFFSET {OFFSET}
 """, engine)
     #   AND published_at >= EXTRACT(EPOCH FROM NOW()) - {COPYPASTE_WINDOW_SECS}
 print("✅ Successfully loaded unclustered articles")
@@ -562,9 +565,8 @@ df_recent_zh = pd.read_sql(f"""
     FROM news
     WHERE content IS NOT NULL
     AND published_at IS NOT NULL
-    ORDER BY published_at ASC
+    ORDER BY published_at DESC
     LIMIT {SAMPLE_SIZE}
-    OFFSET {OFFSET}
 """, engine)
 print("✅ Successfully loaded articles from the last 3 days")
 
@@ -829,7 +831,8 @@ for _, row in df_new.iterrows():
         df_clusters.at[cluster_idx, "centroid_embedding"] = new_centroid
         df_clusters.at[cluster_idx, "cluster_size"] = n + 1
         cluster_embeddings[cluster_idx] = new_centroid
-        cluster_centroid_embedding_updates[assigned_cluster_id] = [new_centroid]
+        attached_counts[assigned_cluster_id] += 1
+        cluster_centroid_embedding_updates.setdefault(assigned_cluster_id, []).append(embedding)
 
         # Update latest_published (tz-aware)
         prev_latest_unix = entityUtil.as_unix_seconds(df_clusters.at[cluster_idx, "latest_published"])
@@ -940,12 +943,13 @@ def _llm_worker_for_cluster(cid: str, cidx: int, centroid_vec: np.ndarray, membe
 
         # llmSummarisationUtil.get_headline_and_summary now returns a Python dict:
         # {"headline": str, "summary": list[str]}
-        parsed = llmSummarisationUtil.get_headline_and_summary(articles_text) or {}
-
+        parsed = llmSummarisationUtil.get_headline_summary_and_question(articles_text) or {}
+        print("parsed:",parsed)
         headline = parsed.get("headline", "")
         summary = parsed.get("summary", "")
+        question = parsed.get("question", "")
 
-        return {"cid": cid, "cidx": cidx, "ok": True, "headline": headline, "summary": summary, "err": None}
+        return {"cid": cid, "cidx": cidx, "ok": True, "headline": headline, "summary": summary, "question":question, "err": None}
     except Exception as e:
         return {
             "cid": cid,
@@ -988,7 +992,8 @@ if new_clusters_created:
             if res["ok"]:
                 df_clusters.at[cidx, "headline"] = res["headline"]
                 df_clusters.at[cidx, "summary"] = res["summary"]
-                print(f"📝 Cluster {cid}: generated headline/summary.")
+                df_clusters.at[cidx, "question"] = res["question"]
+                print(f"📝 Cluster {cid}: generated headline/summary/question.")
             else:
                 print(f"⚠️ LLM summarization failed for cluster {cid}: {res['err']}")
 
@@ -1006,17 +1011,20 @@ if processed_rows:
         cidx = idxs[0]
         h = df_clusters.at[cidx, "headline"]
         s = df_clusters.at[cidx, "summary"]
-        if h or s:
+        q= df_clusters.at[cidx, "question"]
+        if h or s or q:
             mask = df_clustered["cluster_id"] == cid
             df_clustered.loc[mask, "headline"] = h
             df_clustered.loc[mask, "summary"] = s
+            df_clustered.loc[mask, "question"] = q
     dbUtil.store_clusters_to_db(
         df_clustered,
         engine,
         cluster_centroid_embedding_updates=cluster_centroid_embedding_updates,
         cluster_latest_pub=cluster_latest_pub,
         cluster_top_entities=cluster_top_entities,
-        job_id=job_id
+        job_id=job_id,
+        attached_counts=attached_counts
     )
 else:
     print("⚠️ No articles were processed.")
