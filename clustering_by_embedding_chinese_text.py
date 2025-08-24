@@ -26,7 +26,6 @@ import re
 import json
 import html as html_lib
 import textwrap
-from sqlalchemy import text
 import traceback
 
 # ---- CONFIGURATION ----
@@ -477,9 +476,10 @@ def embed_long_text_zh(text: str, char_budget: int = None, overlap: int = 40) ->
     return _normalize(v)
 
 # ---- LOAD EXISTING CLUSTERS ----
-three_days_ago = datetime.now() - timedelta(days=3)
+three_days_ago = int((datetime.now() - timedelta(days=3)).timestamp())
 
-query = text("""
+df_clusters = pd.read_sql(
+    f"""
     SELECT id, 
            centroid_embedding, 
            top_entities, 
@@ -492,10 +492,10 @@ query = text("""
            topic_candidates,
            places_in_concern
     FROM cluster
-    WHERE latest_published >= :since
-""")
-
-df_clusters = pd.read_sql(query, engine, params={"since": three_days_ago})
+    WHERE latest_published >= '{three_days_ago}'
+    """,
+    engine
+)
 print("✅ Successfully loaded existing clusters")
 
 if df_clusters.empty:
