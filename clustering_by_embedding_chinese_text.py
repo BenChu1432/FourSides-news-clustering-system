@@ -476,7 +476,7 @@ def embed_long_text_zh(text: str, char_budget: int = None, overlap: int = 40) ->
     return _normalize(v)
 
 # ---- LOAD EXISTING CLUSTERS ----
-three_days_ago = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
+three_days_ago = datetime.now() - timedelta(days=3)
 
 df_clusters = pd.read_sql(
     f"""
