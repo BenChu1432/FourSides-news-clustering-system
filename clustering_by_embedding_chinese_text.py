@@ -1017,6 +1017,51 @@ if processed_rows:
             df_clustered.loc[mask, "headline"] = h
             df_clustered.loc[mask, "summary"] = s
             df_clustered.loc[mask, "question"] = q
+
+    # ---- SANITIZE BEFORE DB WRITE ----
+    def to_py(obj):
+        """Convert numpy scalars/arrays and nested structures to pure Python."""
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, dict):
+            return {k: to_py(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [to_py(x) for x in obj]
+        return obj
+
+    JSON_COLS = [
+        "top_entities", "topic_candidates",
+        "places_in_concern", "places_in_detail",
+        "copypaste_matches", "copypaste_origin",
+        "headline", "summary", "question",
+    ]
+    FLOAT_COLS = [
+        "main_topic_score", "secondary_topic_score",
+        "attach_sim", "attach_ent_overlap", "attach_place_overlap",
+        "attach_time_bonus", "attach_combined", "attach_thresh",
+    ]
+    INT_COLS = ["published_at", "latest_published"]
+
+    for col in JSON_COLS:
+        if col in df_clustered.columns:
+            df_clustered[col] = df_clustered[col].apply(to_py)
+
+    for col in FLOAT_COLS:
+        if col in df_clustered.columns:
+            df_clustered[col] = (
+                pd.to_numeric(df_clustered[col], errors="coerce")
+                .astype(float)
+                .where(df_clustered[col].notna(), None)
+            )
+
+    for col in INT_COLS:
+        if col in df_clustered.columns:
+            df_clustered[col] = pd.to_numeric(df_clustered[col], errors="coerce").astype("Int64")
+            
     dbUtil.store_clusters_to_db(
         df_clustered,
         engine,

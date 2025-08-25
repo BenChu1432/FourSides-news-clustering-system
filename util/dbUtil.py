@@ -397,9 +397,29 @@ def store_clusters_to_db(
       - main_topic, main_topic_score, secondary_topic, secondary_topic_score
       - ambiguous (bool), topic_candidates (list[dict])
       - places_in_concern (list[str] of InterestingRegionOrCountry)
-      - places_in_detail (list[{"place": str, "confidence": number, "place_source": str}])
+      - places_in_detail (list[{"place": str, "confidence"/"frequency", "place_source": str}])
       - entities (list[(entity_text, label)])
     """
+
+    # --- New: recursive sanitizer to strip numpy types everywhere ---
+    import numpy as _np
+
+    def py(obj):
+        """Recursively convert numpy scalars/arrays and tuples to pure Python."""
+        if isinstance(obj, (_np.floating,)):
+            return float(obj)
+        if isinstance(obj, (_np.integer,)):
+            return int(obj)
+        if isinstance(obj, _np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, dict):
+            return {k: py(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [py(x) for x in obj]
+        if isinstance(obj, tuple):
+            return [py(x) for x in obj]  # convert tuple → list for JSON/ARRAY
+        return obj
+
     SessionLocal = sessionmaker(bind=engine, future=True)
     cluster_centroid_embedding_updates = cluster_centroid_embedding_updates or {}
     cluster_latest_pub = cluster_latest_pub or {}
@@ -437,7 +457,6 @@ def store_clusters_to_db(
             if not isinstance(place, str) or place not in VALID_INTERESTING_PLACES:
                 continue
 
-            # pass-through if present; keep numbers safe
             out = {"place": place}
 
             if "frequency" in obj:
@@ -446,9 +465,11 @@ def store_clusters_to_db(
                 except Exception:
                     pass
 
-            if "confidence" in obj or "score" in obj:
+            # accept either "confidence" or "score"
+            conf_val = obj.get("confidence", obj.get("score", None))
+            if conf_val is not None:
                 try:
-                    out["confidence"] = float(obj.get("confidence", obj.get("score")))
+                    out["confidence"] = float(conf_val)
                 except Exception:
                     pass
 
@@ -466,33 +487,40 @@ def store_clusters_to_db(
             cluster_meta_by_id: Dict[str, dict] = {}
             for cluster_uuid, group in df.groupby("cluster_id"):
                 first_row = group.iloc[0]
+
+                # Sanitize raw values early
+                centroid_emb = first_row.get("centroid_embedding")
+                centroid_emb = centroid_emb.tolist() if isinstance(centroid_emb, _np.ndarray) else centroid_emb
+                centroid_emb = py(centroid_emb)
+
+                top_entities = py(first_row.get("top_entities"))
+                topic_candidates = py(first_row.get("topic_candidates"))
+                cluster_places_concern_raw = first_row.get("cluster_places_in_concern") or first_row.get("places_in_concern")
+                cluster_places_detail_raw = first_row.get("cluster_places_in_detail") or first_row.get("places_in_detail")
+
                 meta = {
                     "cluster_name": first_row.get("headline"),
                     "cluster_summary": first_row.get("summary"),
                     "cluster_question": first_row.get("question"),
-                    "centroid_embedding": first_row["centroid_embedding"].tolist()
-                        if isinstance(first_row.get("centroid_embedding"), np.ndarray)
-                        else first_row.get("centroid_embedding"),
-                    "top_entities": first_row.get("top_entities"),
+                    "centroid_embedding": centroid_emb,
+                    "top_entities": top_entities,
                     "latest_published": int(first_row["latest_published"]) if first_row.get("latest_published") is not None else None,
                     "article_count": int(group.shape[0]),
-                    # Topic fields (optional)
+                    # Topic fields
                     "main_topic": first_row.get("main_topic"),
-                    "main_topic_score": first_row.get("main_topic_score"),
+                    "main_topic_score": float(first_row.get("main_topic_score")) if first_row.get("main_topic_score") is not None else None,
                     "secondary_topic": first_row.get("secondary_topic"),
-                    "secondary_topic_score": first_row.get("secondary_topic_score"),
+                    "secondary_topic_score": float(first_row.get("secondary_topic_score")) if first_row.get("secondary_topic_score") is not None else None,
                     "ambiguous": bool(first_row.get("ambiguous")) if first_row.get("ambiguous") is not None else False,
-                    "topic_candidates": first_row.get("topic_candidates"),
-                    # Places (updated)
-                    "places_in_concern": _normalize_places_list(
-                        first_row.get("cluster_places_in_concern") or first_row.get("places_in_concern")
-                    ),
-                    "places_in_detail": _normalize_places_detail(
-                        first_row.get("cluster_places_in_detail") or first_row.get("places_in_detail")
-                    ),
+                    "topic_candidates": topic_candidates,
+                    # Places (normalize to enum list and cleaned detail)
+                    "places_in_concern": _normalize_places_list(py(cluster_places_concern_raw)),
+                    "places_in_detail": _normalize_places_detail(py(cluster_places_detail_raw)),
                     "job_id": job_id
                 }
-                cluster_meta_by_id[str(cluster_uuid)] = meta
+
+                # Final sanitize the meta dict
+                cluster_meta_by_id[str(cluster_uuid)] = py(meta)
 
             all_cluster_ids = list(cluster_meta_by_id.keys())
             all_cluster_uuids = [_to_uuid(cid) for cid in all_cluster_ids]
@@ -515,7 +543,8 @@ def store_clusters_to_db(
                 cluster_uuid_to_id[cid] = _to_uuid(cid)
 
             now_ts = int(time.time())
-            print(f"✅ fetch clusters that already exist")
+            print("✅ fetch clusters that already exist")
+
             # ---- Session B (write): create only new clusters ----
             if new_cluster_ids:
                 with SessionLocal.begin() as session:
@@ -537,16 +566,19 @@ def store_clusters_to_db(
                             "topic_candidates": meta.get("topic_candidates"),
                             "places_in_concern": meta.get("places_in_concern"),
                             "places_in_detail": meta.get("places_in_detail"),
-                            "clustering_job_id":meta.get("job_id"),
+                            "clustering_job_id": meta.get("job_id"),
                             "cluster_name": meta.get("cluster_name") or None,
                             "cluster_summary": meta.get("cluster_summary") or None,
                             "cluster_question": meta.get("cluster_question") or None
                         })
+
                     if rows:
+                        # Final safety: sanitize rows list
+                        rows = [py(r) for r in rows]
                         stmt = insert(Cluster).values(rows).on_conflict_do_nothing(index_elements=["id"])
                         session.execute(stmt)
 
-            # ---- Session C (write): update News rows----
+            # ---- Session C (write): update News rows ----
             with SessionLocal.begin() as session:
                 print("📝 Updating news.clusterId ...")
 
@@ -559,12 +591,12 @@ def store_clusters_to_db(
                         select(News.id).where(News.id.in_(article_ids))
                     ).scalars().all()
                 )
-                # Separate update and insert operations
+
                 updates: list[dict] = []
                 inserts: list[dict] = []
 
                 for row in df.itertuples(index=False):
-                    nid = _to_uuid(row.id)  # ensure UUID
+                    nid = _to_uuid(row.id)
                     mapped_cluster = cluster_uuid_to_id.get(str(row.cluster_id)) or _to_uuid(row.cluster_id)
 
                     payload = {
@@ -574,38 +606,32 @@ def store_clusters_to_db(
 
                     emb = getattr(row, "embedding", None)
                     if emb is not None:
-                        if isinstance(emb, np.ndarray):
+                        if isinstance(emb, _np.ndarray):
                             emb = emb.tolist()
-                        payload["embedding"] = emb  # pass Python list/dict
+                        payload["embedding"] = emb
 
                     art_places_concern = getattr(row, "places_in_concern", None)
                     art_places_detail  = getattr(row, "places_in_detail", None)
                     if art_places_concern is not None:
-                        payload["places_in_concern"] = _normalize_places_list(art_places_concern)
+                        payload["places_in_concern"] = _normalize_places_list(py(art_places_concern))
                     if art_places_detail is not None:
-                        payload["places_in_detail"] = _normalize_places_detail(art_places_detail)
-                    if emb is not None:
-                        if isinstance(emb, np.ndarray):
-                            emb = emb.tolist()
-                        # If News.embedding is String:
-                        # payload["embedding"] = json.dumps(emb)
-                        # If News.embedding is ARRAY(Float) or JSONB:
-                        payload["embedding"] = emb
+                        payload["places_in_detail"] = _normalize_places_detail(py(art_places_detail))
 
-                    cp_flag = getattr(row, "copypaste_flag", None)  # << correct attribute name
+                    cp_flag = getattr(row, "copypaste_flag", None)
                     if cp_flag is not None:
                         payload["copypaste_flag"] = bool(cp_flag)
+
+                    # Final sanitize payload
+                    payload = py(payload)
 
                     if nid in existing_news_ids:
                         updates.append(payload)
                     else:
                         inserts.append(payload)
 
-                # Bulk UPDATE by primary key (fast, no SELECT per row)
                 if updates:
                     session.bulk_update_mappings(News, updates)
 
-                # Bulk INSERT for new rows, with one retry to handle concurrency
                 if inserts:
                     try:
                         session.execute(insert(News), inserts)
@@ -621,41 +647,8 @@ def store_clusters_to_db(
                             session.bulk_update_mappings(News, collided)
                         if still_new:
                             session.execute(insert(News), still_new)
+
                 print("✅ Successfully updated news")
-
-                # ---- Session D (write): insert news entities ----
-                # to_insert_rows: List[dict] = []
-                # if "entities" in df.columns:
-                #     for row in df.itertuples(index=False):
-                #         ents = getattr(row, "entities", None) or []
-                #         for entity_text, label in ents:
-                #             if not entity_text:
-                #                 continue
-                #             try:
-                #                 lbl = label if isinstance(label, EntityLabelEnum) else EntityLabelEnum(label)
-                #             except Exception:
-                #                 continue
-                #             to_insert_rows.append({"entity": entity_text, "label": lbl, "newsId": _to_uuid(row.id)})
-
-                # # Insert NewsEntity rows (dedup within-batch; DO NOTHING on conflicts)
-                # if to_insert_rows:
-                #     seen = set()
-                #     deduped_rows = []
-                #     for r in to_insert_rows:
-                #         key = (r["entity"], r["newsId"])
-                #         if key in seen:
-                #             continue
-                #         seen.add(key)
-                #         deduped_rows.append(r)
-                #     tbl = NewsEntity.__table__
-                #     inserted = 0
-                #     for batch in chunked(deduped_rows, insert_chunk_size):
-                #         stmt = insert(tbl).values(batch).on_conflict_do_nothing(index_elements=["entity", "newsId"])
-                #         session.execute(stmt)
-                #         inserted += len(batch)
-                #     print(f"✅ Inserted up to {inserted} news entities (duplicates ignored)")
-                # else:
-                #     print("✅ No entities to insert")
 
             # ---- Session E (write): update existing clusters without reading them ----
             if existing_str_ids:
@@ -670,8 +663,8 @@ def store_clusters_to_db(
                             stmt_values["article_count"] = func.coalesce(Cluster.article_count, 0) + inc
 
                         embeddings = cluster_centroid_embedding_updates.get(cid)
-                        if embeddings and all(isinstance(e, np.ndarray) for e in embeddings):
-                            new_centroid = np.mean(embeddings, axis=0).tolist()
+                        if embeddings and all(isinstance(e, _np.ndarray) for e in embeddings):
+                            new_centroid = _np.mean(embeddings, axis=0).tolist()
                             stmt_values["centroid_embedding"] = new_centroid
 
                         latest_pub = cluster_latest_pub.get(cid)
@@ -691,9 +684,9 @@ def store_clusters_to_db(
                         meta = cluster_meta_by_id.get(cid, {})
                         if meta.get("main_topic") is not None:
                             stmt_values["main_topic"] = meta.get("main_topic")
-                            stmt_values["main_topic_score"] = meta.get("main_topic_score")
+                            stmt_values["main_topic_score"] = float(meta.get("main_topic_score")) if meta.get("main_topic_score") is not None else None
                             stmt_values["secondary_topic"] = meta.get("secondary_topic")
-                            stmt_values["secondary_topic_score"] = meta.get("secondary_topic_score")
+                            stmt_values["secondary_topic_score"] = float(meta.get("secondary_topic_score")) if meta.get("secondary_topic_score") is not None else None
                         if meta.get("ambiguous") is not None:
                             stmt_values["ambiguous"] = bool(meta.get("ambiguous"))
                         if meta.get("topic_candidates") is not None:
@@ -704,7 +697,9 @@ def store_clusters_to_db(
                         if meta.get("places_in_detail") is not None:
                             stmt_values["places_in_detail"] = meta.get("places_in_detail")
 
-                        # Do NOT set cluster_name/cluster_summary here
+                        # Final sanitize update dict
+                        stmt_values = py(stmt_values)
+
                         if stmt_values:
                             stmt = update(Cluster).where(Cluster.id == cid_uuid).values(**stmt_values)
                             session.execute(stmt)
