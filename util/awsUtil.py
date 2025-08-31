@@ -11,9 +11,9 @@ async def upload_html_to_s3(html_content, object_name):
     :param object_name: S3 object key name in the bucket
     :return: True if upload succeeded, False otherwise
     """
-    bucket_name = "clustering-results-for-foursides-clustering-graphs"
+    bucket_name = "foursides-clustering-visualisation-graphs"
 
-    session = boto3.Session(profile_name='kacha')
+    session = boto3.Session()
     s3 = session.client('s3', region_name='ap-northeast-1')
 
     # Convert string to BytesIO
