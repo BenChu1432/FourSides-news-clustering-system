@@ -31,6 +31,8 @@ from sqlalchemy.dialects.postgresql import insert
 import numpy as _np
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 SYNC_DATABASE_URL = os.getenv("SYNC_DATABASE_URL")
@@ -40,6 +42,11 @@ EMBED_MODEL = os.getenv("EMBED_MODEL")
 SIM_THRESH = float(os.getenv("SIM_THRESH")) if os.getenv("SIM_THRESH") else 0.0
 TIME_WINDOW_DAYS = int(os.getenv("TIME_WINDOW_DAYS")) if os.getenv("TIME_WINDOW_DAYS") else 7
 ENTITY_LABELS = os.getenv("ENTITY_LABELS")
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+def taipei_now_unix() -> int:
+    return int(datetime.now(TAIPEI_TZ).timestamp())
 
 Base = declarative_base()
 
@@ -346,7 +353,7 @@ def create_clustering_job(engine):
     SessionLocal = sessionmaker(bind=engine, future=True)
     with SessionLocal() as session:
         try:
-            job = ClusteringJob(start_time=int(time.time()))
+            job = ClusteringJob(start_time=int(datetime.now(TAIPEI_TZ).timestamp()))
             session.add(job)
             session.commit()
             print(f"🟢 Started clustering job {job.id}")
@@ -359,7 +366,7 @@ def finish_clustering_job(engine, job_id, url):
     with SessionLocal() as session:
         job = session.get(ClusteringJob, job_id)
         if job:
-            job.end_time = int(time.time())
+            job.end_time = int(datetime.now(TAIPEI_TZ).timestamp())
             job.visualisation_url = url
             session.commit()
             print(f"✅ Finished clustering job {job_id}")
@@ -370,7 +377,7 @@ def log_clustering_failure(engine, job_id, failure_type, detail):
         failure = ClusteringFailure(
             failure_type=failure_type,
             detail=detail,
-            timestamp=int(time.time()),
+            timestamp=int(datetime.now(TAIPEI_TZ).timestamp()),
             jobId=job_id,
         )
         session.add(failure)
@@ -570,7 +577,7 @@ def store_clusters_to_db(
     for cid in new_cluster_ids:
         cluster_uuid_to_id[cid] = to_uuid(cid)
 
-    now_ts = int(time.time())
+    now_ts = taipei_now_unix()
     print(f"✅ Existing clusters fetched. existing={len(existing_ids)}, new={len(new_cluster_ids)}")
 
     # ---------- 寫入新 clusters ----------

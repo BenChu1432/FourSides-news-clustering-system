@@ -27,6 +27,7 @@ import json
 import html as html_lib
 import textwrap
 import traceback
+from zoneinfo import ZoneInfo
 
 # ---- CONFIGURATION ----
 load_dotenv()
@@ -85,6 +86,8 @@ TOPIC_MIN_SIM        = float(os.getenv("TOPIC_MIN_SIM") or 0.30)
 TOPIC_MARGIN         = float(os.getenv("TOPIC_MARGIN") or 0.04)
 TOPIC_SECONDARY_MIN  = float(os.getenv("TOPIC_SECONDARY_MIN") or 0.28)
 TOPIC_MAX_CANDIDATES = int(os.getenv("TOPIC_MAX_CANDIDATES") or 3)
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 def _normalize(v: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(v)
@@ -490,7 +493,7 @@ def embed_long_text_zh(text: str, char_budget: int | None = None, overlap: int =
     return (v / n) if n > 1e-12 else np.zeros_like(v, dtype=np.float32)
 
 # ---- LOAD EXISTING CLUSTERS ----
-three_days_ago = int((datetime.now() - timedelta(days=3)).timestamp())
+three_days_ago = int((datetime.now(TAIPEI_TZ) - timedelta(days=3)).timestamp())
 
 df_clusters = pd.read_sql(
     f"""
@@ -506,7 +509,7 @@ df_clusters = pd.read_sql(
            topic_candidates,
            places_in_concern
     FROM cluster
-    WHERE latest_published >= '{three_days_ago}'
+    WHERE latest_published >= {three_days_ago}
     """,
     engine
 )
@@ -521,7 +524,7 @@ else:
     )
 
     # Make latest_published timezone-aware datetime
-    df_clusters["latest_published"] = pd.to_datetime(df_clusters["latest_published"], unit="s", utc=True)
+    df_clusters["latest_published"] = pd.to_datetime(df_clusters["latest_published"], unit="s").dt.tz_localize("Asia/Taipei")
 
     cluster_embeddings = np.vstack(df_clusters["centroid_embedding"].values)
     print("✅ Successfully converted centroid embeddings and timestamps")
@@ -828,7 +831,7 @@ for _, row in df_new.iterrows():
             "id": assigned_cluster_id,
             "centroid_embedding": embedding,
             "top_entities": top_ents_seed,
-            "latest_published": published_at,
+            "latest_published": pd.Timestamp(published_at, unit="s", tz="Asia/Taipei"),
             "main_topic": main_topic,
             "main_topic_score": main_topic_score,
             "secondary_topic": secondary_topic,
@@ -869,7 +872,7 @@ for _, row in df_new.iterrows():
         # Update latest_published (tz-aware)
         prev_latest_unix = entityUtil.as_unix_seconds(df_clusters.at[cluster_idx, "latest_published"])
         new_latest_unix = max(prev_latest_unix, pub_unix)
-        df_clusters.at[cluster_idx, "latest_published"] = pd.Timestamp(new_latest_unix, unit="s", tz="UTC")
+        df_clusters.at[cluster_idx, "latest_published"] = pd.Timestamp(new_latest_unix, unit="s", tz="Asia/Taipei")
         cluster_latest_pub[assigned_cluster_id] = new_latest_unix
 
         # Update top entities
