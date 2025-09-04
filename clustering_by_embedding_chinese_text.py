@@ -416,17 +416,18 @@ def embed_long_text(text, max_tokens=512):
         chunks.append(embedder.encode(curr, show_progress_bar=False))
     return np.mean(chunks, axis=0)
 
-def embed_long_text_zh(text: str, char_budget: int = None, overlap: int = 40) -> np.ndarray:
+def embed_long_text_zh(text: str, char_budget: int | None = None, overlap: int = 40) -> np.ndarray:
     """
-    Chunk Chinese text by sentences with a conservative character budget,
-    encode chunks with normalize_embeddings=True, mean-pool, then L2-normalize.
+    Chunk Chinese text by sentence, encode chunks with normalize_embeddings=True,
+    mean-pool, then L2-normalize. Returns zero-vector if input is empty.
     """
     text = (text or "").strip()
-    dim = getattr(embedder, "get_sentence_embedding_dimension", lambda: None)()
-    if not text:
-        return np.zeros(dim or 1024, dtype=np.float32)
+    get_dim = getattr(embedder, "get_sentence_embedding_dimension", None)
+    dim = get_dim() if callable(get_dim) else 1024
 
-    # Conservative budget: <= 0.8 * max_seq_length tokens → ~ 380 chars
+    if not text:
+        return np.zeros(dim, dtype=np.float32)
+
     if char_budget is None:
         char_budget = int(os.getenv("EMBED_MAX_CHARS") or 380)
 
@@ -441,39 +442,52 @@ def embed_long_text_zh(text: str, char_budget: int = None, overlap: int = 40) ->
 
     for s in sents if sents else [text]:
         if not curr:
-            curr = s if len(s) <= char_budget else s[:char_budget]
-            # If a single sentence is too long, split it hard
-            i = char_budget
-            while len(s) - i > 0:
-                nxt = s[i - overlap:i - overlap + char_budget]
-                chunks.append(nxt)
-                i += (char_budget - overlap)
+            # Start or hard-split long sentence
+            if len(s) <= char_budget:
+                curr = s
+            else:
+                # Hard split long sentence with overlap
+                i = 0
+                while i < len(s):
+                    end = min(i + char_budget, len(s))
+                    piece = s[i:end]
+                    chunks.append(piece)
+                    if end >= len(s):
+                        break
+                    i = end - overlap
             continue
-        if len(curr) + len(s) + 1 <= char_budget:
-            curr = curr + " " + s
+
+        if len(curr) + 1 + len(s) <= char_budget:
+            curr = f"{curr} {s}"
         else:
             flush()
-            # Start next chunk with overlap context to keep coherence
-            prefix = curr[-overlap:] if curr else ""
-            nxt = (prefix + s) if prefix else s
-            if len(nxt) > char_budget:
-                chunks.append(nxt[:char_budget])
-                # split residual
-                i = overlap + char_budget
-                while len(nxt) - i > 0:
-                    piece = nxt[i - overlap:i - overlap + char_budget]
-                    chunks.append(piece)
-                    i += (char_budget - overlap)
-                curr = ""
-            else:
+            nxt = (curr[-overlap:] + s) if curr else s
+            if len(nxt) <= char_budget:
                 curr = nxt
+            else:
+                # Split the overrun
+                i = 0
+                while i < len(nxt):
+                    end = min(i + char_budget, len(nxt))
+                    piece = nxt[i:end]
+                    chunks.append(piece)
+                    if end >= len(nxt):
+                        break
+                    i = end - overlap
+                curr = ""
+
     flush()
 
+    if not chunks:
+        return np.zeros(dim, dtype=np.float32)
+
     embs = embedder.encode(chunks, show_progress_bar=False, normalize_embeddings=True)
-    if isinstance(embs, list):
-        embs = np.vstack(embs)
+    embs = np.vstack(embs) if isinstance(embs, list) else embs
     v = np.mean(embs, axis=0).astype(np.float32)
-    return _normalize(v)
+
+    # L2 normalize
+    n = float(np.linalg.norm(v))
+    return (v / n) if n > 1e-12 else np.zeros_like(v, dtype=np.float32)
 
 # ---- LOAD EXISTING CLUSTERS ----
 three_days_ago = int((datetime.now() - timedelta(days=3)).timestamp())
@@ -543,6 +557,7 @@ df_new = pd.read_sql(f"""
     FROM news
     WHERE "clusterId" IS NULL
       AND content IS NOT NULL
+      AND title IS NOT NULL
       AND published_at IS NOT NULL
    ORDER BY published_at DESC NULLS LAST
     LIMIT {SAMPLE_SIZE}
@@ -590,11 +605,26 @@ print("✅ Successfully hashed articles for copy-paste reporting detection")
 
 # Embed → Find Similar → Score (sim + bonuses) → Assign
 for _, row in df_new.iterrows():
+    def should_embed_article(title: str | None, content: str | None) -> bool:
+        """Only embed if we have meaningful text (title or content)."""
+        t = (title or "").strip()
+        c = (content or "").strip()
+        return bool(t or c)
+
+    def is_zero_vec(vec: np.ndarray, eps: float = 1e-8) -> bool:
+        try:
+            return not np.isfinite(vec).all() or float(np.linalg.norm(vec)) < eps
+        except Exception:
+            return True
     article_id = str(row["id"])
     content = row["content"]
     title_zh = (row.get("title") or "").strip()
     content_zh = (row.get("content") or "").strip()
+    if not should_embed_article(title_zh, content_zh):
+        # Skip processing entirely if both title and content are empty/missing
+        continue
     text_zh = (title_zh + "\n" + content_zh).strip()
+    
     
     url = row["url"]
     media_name = str(row.get("media_name") or "")
@@ -682,6 +712,10 @@ for _, row in df_new.iterrows():
 
     # Embedding        
     embedding = embed_long_text_zh(text_zh if text_zh else (row.get("content") or ""))
+    if is_zero_vec(embedding):
+        # Optionally log and continue
+        print(f"Skip embedding for article {row['id']} (zero/invalid vector)")
+        continue
 
     ents_counter, doc_ner = extract_ents_zh(text_zh)
     raw_places = extract_places_zh(doc_ner)

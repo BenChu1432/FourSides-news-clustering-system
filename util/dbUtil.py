@@ -629,13 +629,27 @@ def store_clusters_to_db(
             payload = {"id": nid, "clusterId": mapped_cluster}
 
             # 可選欄位：embedding
+            # Only persist embedding when the source article had content AND the vector is valid
             emb = getattr(row, "embedding", None)
-            if emb is not None:
-                if isinstance(emb, _np.ndarray):
-                    emb = emb.tolist()
-                elif not isinstance(emb, (list, str)):
-                    emb = str(emb)
-                payload["embedding"] = emb
+            src_content = getattr(row, "content", None)
+
+            def _embed_payload_value(e):
+                if isinstance(e, _np.ndarray):
+                    return e.tolist()
+                if isinstance(e, (list, str)):
+                    return e
+                # Fallback: stringify if needed
+                return str(e)
+
+            # Require non-null content and a non-zero vector to store embedding
+            if src_content is not None and emb is not None:
+                try:
+                    v = _np.array(emb, dtype=float)
+                    if _np.isfinite(v).all() and float(_np.linalg.norm(v)) > 1e-8:
+                        payload["embedding"] = _embed_payload_value(emb)
+                except Exception:
+                    # Don’t write an invalid embedding
+                    pass
 
             # places
             art_places_concern = getattr(row, "places_in_concern", None)
