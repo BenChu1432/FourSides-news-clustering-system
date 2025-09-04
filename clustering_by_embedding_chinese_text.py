@@ -789,14 +789,12 @@ for _, row in df_new.iterrows():
             for ((t, l), cnt) in ents_counter.items()
         ]
         published_at = int(row["published_at"])
-        pub_unix = int(published_at)
-        published_ts = pd.Timestamp(pub_unix, unit="s", tz="UTC")
 
         new_row = {
             "id": assigned_cluster_id,
             "centroid_embedding": embedding,
             "top_entities": top_ents_seed,
-            "latest_published": published_ts,
+            "latest_published": published_at,
             "main_topic": main_topic,
             "main_topic_score": main_topic_score,
             "secondary_topic": secondary_topic,
