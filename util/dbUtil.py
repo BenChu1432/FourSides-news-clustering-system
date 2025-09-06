@@ -566,7 +566,7 @@ def store_clusters_to_db(
     existing_ids = set()
     if all_cluster_uuids:
         with SessionLocal() as session:
-            for batch in chunked(all_cluster_uuids, 1000):
+            for batch in chunked(all_cluster_uuids, 500):
                 existing_ids.update(
                     row[0] for row in session.query(Cluster.id).filter(Cluster.id.in_(batch)).all()
                 )

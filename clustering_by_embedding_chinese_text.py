@@ -51,7 +51,14 @@ TOP_K_ATTACH  = int(os.getenv("TOP_K_ATTACH") or 20)    # number of nearest clus
 
 ZH_MODEL = "zh_core_web_trf"  # "zh_core_web_trf" for best quality;
 
-engine = create_engine(SYNC_DATABASE_URL)
+engine = create_engine(
+    SYNC_DATABASE_URL,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,  # Detect broken connections
+    pool_recycle=1800,   # Recycle connections every 30 mins
+    future=True
+)
 embedder = SentenceTransformer('moka-ai/m3e-large')
 
 # ---- CATEGORY CLASSIFICATION SETUP ----
