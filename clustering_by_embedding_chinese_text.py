@@ -17,6 +17,7 @@ import spacy
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
 import umap
+from traditionaliseUtil import simplified_to_traditional
 from util import awsUtil, dbUtil, entityUtil, placeUtil, strUtil,copyPasteUtil,llmSummarisationUtil
 import plotly.express as px
 from datetime import UTC  # Add this import if not already present
@@ -813,8 +814,8 @@ for _, row in df_new.iterrows():
 
     cluster_members[assigned_cluster_id].append({
         "id": article_id,
-        "title": title_zh,
-        "content": content_zh,
+        "title": simplified_to_traditional(title_zh),
+        "content": simplified_to_traditional(content_zh),
         "embedding": embedding,
         "published_at": pub_unix,
         "media_name": media_name,
@@ -924,8 +925,8 @@ for _, row in df_new.iterrows():
     # Save processed row (per-article fields)
     processed_rows.append({
         "id": article_id,
-        "title": row["title"],
-        "content": content_zh,
+        "title": simplified_to_traditional(row["title"]),
+        "content": simplified_to_traditional(content_zh),
         "embedding": embedding,
         "published_at": pub_unix,
         "url": url,
