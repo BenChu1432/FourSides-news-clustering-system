@@ -17,7 +17,7 @@ import spacy
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
 import umap
-from traditionaliseUtil import simplified_to_traditional
+from util.traditionaliseUtil import simplified_to_traditional
 from util import awsUtil, dbUtil, entityUtil, placeUtil, strUtil,copyPasteUtil,llmSummarisationUtil
 import plotly.express as px
 from datetime import UTC  # Add this import if not already present
