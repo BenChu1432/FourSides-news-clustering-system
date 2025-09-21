@@ -846,14 +846,14 @@ for _, row in df_new.iterrows():
             "secondary_topic_score": secondary_score,
             "ambiguous": ambiguous,
             "topic_candidates": topic_candidates,
-
-            # Places (cluster-level)
             "places_in_concern": cluster_places_in_concern,
             "places_in_detail":  cluster_places_in_detail,
-
             "cluster_size": 1,
         }
         cluster_top_entities[assigned_cluster_id] = Counter(ents_counter)
+
+        # NEW: ensure DB updater sees the latest timestamp for this brand-new cluster
+        cluster_latest_pub[assigned_cluster_id] = int(row["published_at"])
 
         df_clusters = pd.concat([df_clusters, pd.DataFrame([new_row])], ignore_index=True)
 

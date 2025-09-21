@@ -529,8 +529,14 @@ def store_clusters_to_db(
     for cluster_id, group in grouped:
         first = group.iloc[0]
 
-        centroid_emb = first.get("centroid_embedding")
-        centroid_emb = py(centroid_emb)
+        # Max of all news.latest_published in this batch for the cluster
+        try:
+            group_latest = int(_np.nanmax(_np.array(group["latest_published"], dtype="float64")))
+        except Exception:
+            # Fallback if column missing or mixed types
+            group_latest = int(first["latest_published"]) if first.get("latest_published") is not None else None
+
+        centroid_emb = py(first.get("centroid_embedding"))
 
         meta = {
             "cluster_name": first.get("headline") or None,
@@ -538,7 +544,8 @@ def store_clusters_to_db(
             "cluster_question": first.get("question") or None,
             "centroid_embedding": centroid_emb,
             "top_entities": py(first.get("top_entities")),
-            "latest_published": int(first["latest_published"]) if first.get("latest_published") is not None else None,
+            # NEW: use group max here
+            "latest_published": group_latest,
             "article_count": int(group.shape[0]),
             "main_topic": first.get("main_topic"),
             "main_topic_score": float(first.get("main_topic_score")) if first.get("main_topic_score") is not None else None,
