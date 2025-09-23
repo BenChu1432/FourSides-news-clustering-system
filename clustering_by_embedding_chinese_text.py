@@ -501,7 +501,7 @@ def embed_long_text_zh(text: str, char_budget: int | None = None, overlap: int =
     return (v / n) if n > 1e-12 else np.zeros_like(v, dtype=np.float32)
 
 # ---- LOAD EXISTING CLUSTERS ----
-three_days_ago = int((datetime.now(TAIPEI_TZ) - timedelta(days=3)).timestamp())
+ten_days_ago = int((datetime.now(TAIPEI_TZ) - timedelta(days=10)).timestamp())
 
 df_clusters = pd.read_sql(
     f"""
@@ -517,11 +517,11 @@ df_clusters = pd.read_sql(
            topic_candidates,
            places_in_concern
     FROM cluster
-    WHERE latest_published >= {three_days_ago}
+    WHERE latest_published >= {ten_days_ago}
     """,
     engine
 )
-print("✅ Successfully loaded existing clusters")
+print(f"✅ Successfully loaded the existing ({len(df_clusters)}) clusters")
 
 if df_clusters.empty:
     print("ℹ️ No existing clusters found; starting fresh.")
