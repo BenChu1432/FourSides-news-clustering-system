@@ -132,7 +132,8 @@ MEDIA_NAME_TO_REGION = {
     "MyPeopleVol": "台灣", "TaiwanTimes": "台灣", "ChinaDailyNews": "台灣",
     "SETN": "台灣", "NextAppleNews": "台灣", "MirrorMedia": "台灣", "NowNews": "台灣",
     "StormMedia": "台灣", "TVBS": "台灣", "EBCNews": "台灣", "ETtoday": "台灣",
-    "NewTalk": "台灣", "FTV": "台灣","TaroNews":"台灣",
+    "NewTalk": "台灣", "FTV": "台灣","TaroNews":"台灣","PChome":"台灣",
+    "GVM":"台灣",
 
     # Hong Kong
     "HongKongFreePress": "香港", "HKFreePress": "香港", "MingPaoNews": "香港",
